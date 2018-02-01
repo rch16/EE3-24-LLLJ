@@ -73,7 +73,7 @@ LIS3DH_DATARATE_LOWPOWER_5KHZ   = 0b1001
 
 
 ### variables
-_i2c_port = I2C()
+_i2c_port = 0
 _i2c_addr = -1
 
 
@@ -112,3 +112,4 @@ def read():
     _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_OUT_X_L | 0x80)
     data = _i2c_port.readfrom(_i2c_addr, 6)
     print("data: {0}".format(data))
+

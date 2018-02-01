@@ -8,7 +8,7 @@ Description: use MicroPython to communicate between ESP8266 (WiFi module) and LI
 
 ## Usage
 
-1. install `ampy`
+- install `ampy`
 
   `sudo pip3 install adafruit-ampy`
 
