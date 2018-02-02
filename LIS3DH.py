@@ -73,8 +73,8 @@ LIS3DH_DATARATE_LOWPOWER_5KHZ   = 0b1001
 
 
 ### variables
-_i2c_port = 0
-_i2c_addr = -1
+#_i2c_port = 0
+#_i2c_addr = -1
 
 
 ### functions

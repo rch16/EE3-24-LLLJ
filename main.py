@@ -78,58 +78,100 @@ LIS3DH_DATARATE_LOWPOWER_5KHZ   = 0b1001
 _i2c_port = 0
 _i2c_addr = -1
 
-
 ### functions
 
 # initialisation
-#def init(i2c_addr = LIS3DH_DEFAULT_ADDRESS, scl = -1, sda = -1, freq = 400000):
-#    _i2c_addr = i2c_addr
-#    _i2c_port = I2C(scl, sda, freq)
+# def init(i2c_addr = LIS3DH_DEFAULT_ADDRESS, scl = 5, sda = 4, freq = 400000):
+   # _i2c_addr = i2c_addr
+   # _i2c_port = I2C(Pin(scl), Pin(sda), freq)
 
 # begin I2C communication
 def begin():
     print("Beginning I2C communication")
     
     device_id = _i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_WHOAMI, 1)
-    if device_id != 0x33:
+    print('device_id:', hex(ord(device_id)));
+    if ord(device_id) != 0x33:
         print("FAILURE: LIS3DH not detected at {0}".format(_i2c_addr))
         return False
     else:
         print("SUCCESS: LIS3DH detected at {0}".format(_i2c_addr))
-        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL1, 0x07)    # enable all axes, normal mode
-        set_data_rate(_i2c_addr, LIS3DH_DATARATE_400_HZ)  # 400Hz rate
-        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL4, 0x88)    # High res & BDU enabled
-        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL3, 0x10)    # DRDY on INT1
-        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_TEMPCFG, 0x80)  # enable adcs
+        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL1, bytearray([0x07]))    # enable all axes, normal mode
+        set_data_rate(LIS3DH_DATARATE_400_HZ)  # 400Hz rate
+        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL4, bytearray([0x88]))    # High res & BDU enabled
+        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL3, bytearray([0x10]))    # DRDY on INT1
+        _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_TEMPCFG, bytearray([0x80]))  # enable adcs
         return True
 
 def set_data_rate(data_rate):
-    ctl1 = _i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_CTRL1, 1)
+    ctl1 = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_CTRL1, 1))
     ctl1 &= ~(0xF0) # mask off bits
     ctl1 |= (data_rate << 4)
-    _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL1, ctl1)
+    _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL1, bytearray([ctl1]))
 
 # read x y z at once
 def read_from_sensor():
-    _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_OUT_X_L | 0x80)
-    data = _i2c_port.readfrom(_i2c_addr, 6)
-    print("data: ")
-    print(data)
+    data = []
+
+    range = get_range()
+    divider = 1
+    if (range == LIS3DH_RANGE_16_G):
+        divider = 1365 # different sensitivity at 16g
+    if (range == LIS3DH_RANGE_8_G):
+        divider = 4096
+    if (range == LIS3DH_RANGE_4_G):
+        divider = 8190
+    if (range == LIS3DH_RANGE_2_G):
+        divider = 16380
+
+    x_MSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_X_H, 1)) # read X high byte register
+    x_LSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_X_L, 1)) # read X low byte register
+    y_MSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_Y_H, 1))
+    y_LSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_Y_L, 1))
+    z_MSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_Z_H, 1))
+    z_LSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_Z_L, 1))
+
+    data.append(uin16_to_int16((x_MSB << 8) | (x_LSB))/divider)
+    data.append(uin16_to_int16((y_MSB << 8) | (y_LSB))/divider)
+    data.append(uin16_to_int16((z_MSB << 8) | (z_LSB))/divider)
+    
+    return data
+
+def uin16_to_int16(uint16):
+    result = uint16
+    if result > 32767:
+        result -= 65536
+    return result
+
+def get_range():
+    # read the data format register to preserve bits
+    r = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_CTRL4, 1))
+    r = (r >> 4) & 0x03
+    return r
 
 
 #import LIS3DH
 
-#LiIS3DH.init(scl = 5, sda = 4, freq = 400000)
+#init(i2c_addr = LIS3DH_DEFAULT_ADDRESS, scl = 5, sda = 4, freq = 400000)
 _i2c_addr = LIS3DH_DEFAULT_ADDRESS
 _i2c_port = I2C(scl = Pin(5), sda = Pin(4), freq = 400000)
 
 print('init() finished')
 
-print(_i2c_port.scan())
+#print(_i2c_port.scan())
 #LIS3DH.begin()
 begin()
 
 print('begin() finished')
+get_range
 
 #data = LIS3DH.read()
-read_from_sensor()
+d = 0
+
+range = get_range()
+print('range', range)
+
+while True:
+#for i in range(5):
+    d = read_from_sensor()
+    print("x=%.4f,\ty=%.4f,\tz=%.4f" % (d[0], d[1], d[2]))
