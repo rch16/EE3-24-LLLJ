@@ -5,6 +5,9 @@
 print('\n\n\nBegin main.py')
 
 ### imports
+import ujson
+import network
+import time
 from machine import Pin, I2C
 
 # address
@@ -82,6 +85,8 @@ _i2c_addr = -1
 
 # initialisation
 # def init(i2c_addr = LIS3DH_DEFAULT_ADDRESS, scl = 5, sda = 4, freq = 400000):
+   # #global _i2c_addr
+   # #global _i2c_port
    # _i2c_addr = i2c_addr
    # _i2c_port = I2C(Pin(scl), Pin(sda), freq)
 
@@ -96,6 +101,7 @@ def begin():
         return False
     else:
         print("SUCCESS: LIS3DH detected at {0}".format(_i2c_addr))
+        # initialise sensor:
         _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL1, bytearray([0x07]))    # enable all axes, normal mode
         set_data_rate(LIS3DH_DATARATE_400_HZ)  # 400Hz rate
         _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL4, bytearray([0x88]))    # High res & BDU enabled
@@ -111,7 +117,7 @@ def set_data_rate(data_rate):
 
 # read x y z at once
 def read_from_sensor():
-    data = []
+    data = {}
 
     range = get_range()
     divider = 1
@@ -131,9 +137,9 @@ def read_from_sensor():
     z_MSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_Z_H, 1))
     z_LSB = ord(_i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_OUT_Z_L, 1))
 
-    data.append(uin16_to_int16((x_MSB << 8) | (x_LSB))/divider)
-    data.append(uin16_to_int16((y_MSB << 8) | (y_LSB))/divider)
-    data.append(uin16_to_int16((z_MSB << 8) | (z_LSB))/divider)
+    data['x'] = (uin16_to_int16((x_MSB << 8) | (x_LSB))/divider)
+    data['y'] = (uin16_to_int16((y_MSB << 8) | (y_LSB))/divider)
+    data['z'] = (uin16_to_int16((z_MSB << 8) | (z_LSB))/divider)
     
     return data
 
@@ -152,26 +158,26 @@ def get_range():
 
 #import LIS3DH
 
+# parameters
+sleep_time_seconds = 0.5
+
+# variables
+data = {}
+
 #init(i2c_addr = LIS3DH_DEFAULT_ADDRESS, scl = 5, sda = 4, freq = 400000)
 _i2c_addr = LIS3DH_DEFAULT_ADDRESS
 _i2c_port = I2C(scl = Pin(5), sda = Pin(4), freq = 400000)
 
-print('init() finished')
-
-#print(_i2c_port.scan())
 #LIS3DH.begin()
 begin()
 
-print('begin() finished')
-get_range
 
-#data = LIS3DH.read()
-d = 0
+print('range', get_range())     # display range
+print('unit', 'g')              # display unit (g)
 
-range = get_range()
-print('range', range)
+
 
 while True:
-#for i in range(5):
-    d = read_from_sensor()
-    print("x=%.4f,\ty=%.4f,\tz=%.4f" % (d[0], d[1], d[2]))
+    data = read_from_sensor()       # read x,y,z acceleration data from sensor
+    print(ujson.dumps(data))        # print raw JSON data
+    time.sleep(sleep_time_seconds)  # sleep for some time before reading next data
