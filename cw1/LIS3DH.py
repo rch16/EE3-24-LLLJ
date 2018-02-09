@@ -85,23 +85,27 @@ _i2c_port = I2C(scl = Pin(5), sda = Pin(4), freq = 400000)
 range_g = 0 # sensor range as +/- *g
 divider = 1 # dependent on range. Acceleration in g = sensor data / divider
 
+# constants
+gravity = 9806.65 # mm s^(-2)
 
 
 
 ### functions
+
+## "private" functions
 
 # begin I2C communication
 def begin_i2c():
     print("Begin I2C communication...")
     
     device_id = _i2c_port.readfrom_mem(_i2c_addr, LIS3DH_REG_WHOAMI, 1)
-    print('device_id:', hex(ord(device_id)));
+    #print('device_id: {0}'.format(hex(ord(device_id))));
 
     if ord(device_id) != 0x33:
-        print("FAILURE: LIS3DH not detected at {0}".format(_i2c_addr))
+        print("FAILURE: LIS3DH not detected at address {0}".format(hex(_i2c_addr)))
         return False
     else:
-        print("SUCCESS: LIS3DH detected at {0}".format(_i2c_addr))
+        print("SUCCESS: LIS3DH detected at {0}".format(hex(_i2c_addr)))
         # initialise sensor:
         # enable all axes, normal mode
         _i2c_port.writeto_mem(_i2c_addr, LIS3DH_REG_CTRL1, bytearray([0x07]))    # enable all axes, normal mode
@@ -164,6 +168,13 @@ def init_all_param():
         range_g = 2
         divider = 16380
 
+
+# "public" functions
+
 def init():
     begin_i2c()
     init_all_param()
+
+def get_accel():
+    data = read_from_sensor()
+    return data
