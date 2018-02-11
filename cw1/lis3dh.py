@@ -131,7 +131,6 @@ def read_from_sensor(): # read x y z at once
     data['x'] = (uint16_to_int16((x_MSB << 8) | (x_LSB))/divider)
     data['y'] = (uint16_to_int16((y_MSB << 8) | (y_LSB))/divider)
     data['z'] = (uint16_to_int16((z_MSB << 8) | (z_LSB))/divider)
-    #print('raw',data)
     
     return data
 
