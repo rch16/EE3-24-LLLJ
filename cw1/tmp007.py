@@ -8,7 +8,6 @@
 
 #//////////////////// imports ////////////////////
 from machine import Pin, I2C
-import utime
 
 
 
@@ -48,6 +47,7 @@ samplerate = TMP007_CFG_16SAMPLE # high resolution
 
 
 #//////////////////// functions ////////////////////
+## "private" functions
 # begin I2C communication
 def begin_i2c():
     print("Begin I2C communication...")
@@ -68,20 +68,6 @@ def begin_i2c():
         write_mem_16(TMP007_STATMASK, stat_mask)
 
         return True     # sensor found and initialised
-
-def read_die_temp_c():
-    raw = read_mem_16(TMP007_TDIE)
-    #if (raw & 0x1): # invalid temperature
-        #return NAN
-    raw >>= 2
-    t_die = raw * 0.03125 # convert to Celsius
-    return uint16_to_int16(t_die)
-    
-def read_obj_temp_c():
-    raw = read_mem_16(TMP007_TOBJ)
-    raw >>= 2
-    t_obj = raw * 0.03125 # convert to Celsius
-    return uint16_to_int16(t_obj)
 
 def uint16_to_int16(uint16):
     result = uint16
@@ -113,13 +99,24 @@ def addr_detected():
     else:
         return False
 
+## "public" functions
+def init():
+    if not addr_detected():
+        return False
+    else:
+        begin_i2c()
+        return True
 
-if addr_detected():
-    begin_i2c()
-    while True:
-        obj_temp = read_obj_temp_c()
-        die_temp = read_die_temp_c()
-        print('obj_temp = {0}C\tdie_temp = {1}C'.format(obj_temp, die_temp))
-        utime.sleep(4)
-else:
-    print('Nothing detected at address {0}'.format(_i2c_addr))
+def read_die_temp_c():
+    raw = read_mem_16(TMP007_TDIE)
+    #if (raw & 0x1): # invalid temperature
+        #return NAN
+    raw >>= 2
+    t_die = raw * 0.03125 # convert to Celsius
+    return uint16_to_int16(t_die)
+    
+def read_obj_temp_c():
+    raw = read_mem_16(TMP007_TOBJ)
+    raw >>= 2
+    t_obj = raw * 0.03125 # convert to Celsius
+    return uint16_to_int16(t_obj)

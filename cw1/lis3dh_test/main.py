@@ -7,6 +7,7 @@
 
 #//////////////////// imports ////////////////////
 from machine import Pin, I2C
+import utime
 
 
 
@@ -199,3 +200,12 @@ def init():
 def get_accel():
     data = read_from_sensor()
     return data
+
+if init():
+    while True:
+        accel = get_accel()
+        print('x = {:f}, y = {:f}, z = {:f}'.format(accel['x'],accel['y'],accel['z']))
+        utime.sleep(2)
+else:
+    print('Nothing detected at address {0}'.format(_i2c_addr))
+    
