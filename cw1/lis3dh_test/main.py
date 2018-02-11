@@ -106,18 +106,18 @@ def begin_i2c():
         return False    # sensor not found
     else:
         print("SUCCESS: LIS3DH detected at {0}".format(hex(_i2c_addr)))
-        write_mem(LIS3DH_REG_CTRL1, 0x07)       # enable all axes, normal mode
+        write_mem_8(LIS3DH_REG_CTRL1, 0x07)       # enable all axes, normal mode
         set_data_rate(LIS3DH_DATARATE_400_HZ)   # 400Hz rate
-        write_mem(LIS3DH_REG_CTRL4, 0x88)       # high res & BDU enabled
-        write_mem(LIS3DH_REG_CTRL3, 0x10)       # DRDY on INT1
-        write_mem(LIS3DH_REG_TEMPCFG, 0x80)     # enable adcs
+        write_mem_8(LIS3DH_REG_CTRL4, 0x88)       # high res & BDU enabled
+        write_mem_8(LIS3DH_REG_CTRL3, 0x10)       # DRDY on INT1
+        write_mem_8(LIS3DH_REG_TEMPCFG, 0x80)     # enable adcs
         return True     # sensor found and initialised
 
 def set_data_rate(data_rate):
     ctl1 = read_mem_8(LIS3DH_REG_CTRL1)
     ctl1 &= ~(0xF0) # mask off bits
     ctl1 |= (data_rate << 4)
-    write_mem(LIS3DH_REG_CTRL1, ctl1)
+    write_mem_8(LIS3DH_REG_CTRL1, ctl1)
 
 def read_from_sensor(): # read x y z at once
     data = {}
@@ -163,8 +163,8 @@ def init_all_param():   # initialise all global parameters
         range_g = 2
         divider = 16380
 
-def write_mem(reg_addr, data):
-    _i2c_port.writeto_mem(_i2c_addr, reg_addr, bytearray(data))
+def write_mem_8(reg_addr, data):
+    _i2c_port.writeto_mem(_i2c_addr, reg_addr, bytearray([data]))
 
 def read_mem(reg_addr, nbytes):
     str = _i2c_port.readfrom_mem(_i2c_addr, reg_addr, nbytes)
@@ -174,11 +174,8 @@ def read_mem(reg_addr, nbytes):
         result = result << counter | char
         counter += 8
     return result
-
-def write_mem_8(reg_addr, data):    # write 16 bits to register
-    write_mem(reg_addr, data)
     
-def read_mem_8(reg_addr):    # write 16 bits to register
+def read_mem_8(reg_addr):
     return read_mem(reg_addr, 1)
 
 def addr_detected():

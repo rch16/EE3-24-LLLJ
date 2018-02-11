@@ -22,8 +22,8 @@ def formatted_datetime(datetime):
     return '{:d}-{:d}-{:d} {:02d}:{:02d}:{:02d}'.format(datetime[0], datetime[1], datetime[2], datetime[4], datetime[5], datetime[6])
 
 def compile_data():
-    data = lis3dh.get_accel()                           # read x,y,z acceleration
-    # data['temp'] = tmp007.read_obj_temp_c()             # add temperature
+    data = lis3dh.read_from_sensor()                      # read x,y,z acceleration
+    data['temp'] = tmp007.read_obj_temp_c()             # add temperature
     # data['time'] = formatted_datetime(rtc.datetime())   # add time stamp
     return data
 
@@ -45,9 +45,9 @@ distance = 0
 
 #//////////////////// main program ////////////////////
 def main():
-    # if not tmp007.init():
-        # print('TMP007 initialisation unsuccessful - is the sensor connected?')
-        # return
+    if not tmp007.init():
+        print('TMP007 initialisation unsuccessful - is the sensor connected?')
+        return
     if not lis3dh.init():
         print('LIS3DH initialisation unsuccessful - is the sensor connected?')
         return

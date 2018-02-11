@@ -75,8 +75,8 @@ def uint16_to_int16(uint16):
         result -= 65536
     return result
 
-def write_mem(reg_addr, data):
-    _i2c_port.writeto_mem(_i2c_addr, reg_addr, bytearray(data))
+def write_mem_16(reg_addr, data):    # write 16 bits to register
+    _i2c_port.writeto_mem(_i2c_addr, reg_addr, bytearray([data >> 8, data]))
 
 def read_mem(reg_addr, nbytes):
     str = _i2c_port.readfrom_mem(_i2c_addr, reg_addr, nbytes)
@@ -87,9 +87,6 @@ def read_mem(reg_addr, nbytes):
         counter += 8
     return result
 
-def write_mem_16(reg_addr, data):    # write 16 bits to register
-    write_mem(reg_addr, [data >> 8, data])
-    
 def read_mem_16(reg_addr):    # write 16 bits to register
     return read_mem(reg_addr, 2)
 
