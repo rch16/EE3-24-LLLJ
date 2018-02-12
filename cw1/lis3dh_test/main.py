@@ -8,7 +8,8 @@
 #//////////////////// imports ////////////////////
 from machine import Pin, I2C
 import utime
-
+import ujson
+import math
 
 
 #//////////////////// constants ////////////////////
@@ -88,6 +89,11 @@ divider = 1 # depends on range. Acceleration in g = sensor data / divider
 
 GRAVITY = 9806.65 # unit: mm s^(-2)
 
+# CLICK_THRESHOLD: adjust this number for the sensitivity of the 'click' force
+# this strongly depend on the range! for 16G, try 5-10
+# for 8G, try 10-20. for 4G try 20-40. for 2G try 40-80
+CLICK_THRESHOLD = 80
+
 
 
 #//////////////////// functions ////////////////////
@@ -119,7 +125,7 @@ def set_data_rate(data_rate):
     ctl1 |= (data_rate << 4)
     write_mem_8(LIS3DH_REG_CTRL1, ctl1)
 
-def read_from_sensor(): # read x y z at once
+def get_accel(): # read x y z at once
     data = {}
 
     x_MSB = read_mem_8(LIS3DH_REG_OUT_X_H) # read X high byte register
@@ -135,16 +141,77 @@ def read_from_sensor(): # read x y z at once
     
     return data
 
+def set_click(c, click_thresh, time_limit = 10, time_latency = 20, time_window = 255):
+    if c == 0:
+        # disable int
+        r = read_mem_8(LIS3DH_REG_CTRL3)
+        r &= ~(0x80) # turn off I1_CLICK
+        write_mem_8(LIS3DH_REG_CTRL3, r)
+        write_mem_8(LIS3DH_REG_CLICKCFG, 0)
+    else:
+        write_mem_8(LIS3DH_REG_CTRL3, 0x80) # turn on int1 click
+        write_mem_8(LIS3DH_REG_CTRL5, 0x08) # latch interrupt on int1
+        if c == 1:
+            write_mem_8(LIS3DH_REG_CLICKCFG, 0x15) # turn on all axes & single-click
+        elif c == 2:
+            write_mem_8(LIS3DH_REG_CLICKCFG, 0x2A) # turn on all axes & double-click
+
+        write_mem_8(LIS3DH_REG_CLICKTHS, click_thresh)      # arbitrary
+        write_mem_8(LIS3DH_REG_TIMELIMIT, time_limit)       # arbitrary
+        write_mem_8(LIS3DH_REG_TIMELATENCY, time_latency)   # arbitrary
+        write_mem_8(LIS3DH_REG_TIMEWINDOW, time_window)     # arbitrary
+
+def get_click_raw():
+    return read_mem_8(LIS3DH_REG_CLICKSRC)
+
+def get_click():
+    data = {}
+    dclick = False
+    sclick = False
+    x = False
+    y = False
+    z = False
+    
+    raw = get_click_raw()
+    if (raw & 0x20):
+        dclick = True   # double-click
+    if (raw & 0x10):
+        sclick = True   # single-click
+    if (raw & 0x01):
+        x = True        # x-axis high
+    if (raw & 0x02):
+        y = True        # y-axis high
+    if (raw & 0x04):
+        z = True        # z-axis high
+
+    #data['dclick'] = dclick
+    data['sclick'] = sclick
+    data['x'] = x
+    data['y'] = y
+    data['z'] = z
+
+    return data
+
 def uint16_to_int16(uint16):
     result = uint16
     if result > 32767:
         result -= 65536
     return result
 
+def set_range(range):   # range = 2,4,8 or 16
+    r = read_mem_8(LIS3DH_REG_CTRL4)
+    r &= ~(0x30)
+    r |= range << 4
+    write_mem_8(LIS3DH_REG_CTRL4, r)
+
 def get_range():        # read the data format register to preserve bits
     r = read_mem_8(LIS3DH_REG_CTRL4)
     r = (r >> 4) & 0x03
     return r
+
+def update_distance(x,y,z):
+    distance += math.sqrt(math.pow(x, 2) + math.pow(y, 2) + math.pow(z, 2))
+    return distance
 
 def init_all_param():   # initialise all global parameters
     global divider
@@ -186,22 +253,37 @@ def addr_detected():
 
 # "public" functions
 
-def init():
+def init(range_g, ct):
     if not addr_detected():
         return False
     else:
         begin_i2c()
+        range = LIS3DH_RANGE_2_G # default
+        if range_g == 4:
+            range = LIS3DH_RANGE_4_G
+        elif range_g == 8:
+            range = LIS3DH_RANGE_8_G
+        elif range_g == 16:
+            range = LIS3DH_RANGE_16_G
+        set_range(range)
+        set_click(1, click_thresh = ct)
         init_all_param()
         return True
 
-def get_accel():
-    data = read_from_sensor()
+def compile_data():
+    data = {}
+    data['accel'] = get_accel()
+    data['click'] = get_click()
     return data
 
-if init():
+
+if init(2, 20):
+    print('LIS3DH')
+    print('    unit: g')
+    print('    range: +/- {0}g'.format(range_g))
     while True:
-        accel = get_accel()
-        print('x = {:f},\ty = {:f},\tz = {:f}'.format(accel['x'],accel['y'],accel['z']))
+        data = compile_data()
+        print(ujson.dumps(data))
         utime.sleep(0.1)
 else:
     print('Nothing detected at address {0}'.format(_i2c_addr))
