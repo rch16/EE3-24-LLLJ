@@ -7,6 +7,9 @@
 
 #//////////////////// imports ////////////////////
 from machine import Pin, I2C
+import utime
+import ujson
+import math
 
 
 
@@ -78,14 +81,33 @@ LIS3DH_DATARATE_LOWPOWER_5KHZ   = 0b1001
 
 
 #//////////////////// variables ////////////////////
-
 _i2c_addr = LIS3DH_DEFAULT_ADDRESS
 _i2c_port = I2C(scl = Pin(5), sda = Pin(4), freq = 400000)
 
 range_g = 0 # sensor range as +/- *g
 divider = 1 # depends on range. Acceleration in g = sensor data / divider
 
-GRAVITY = 9806.65 # unit: mm s^(-2)
+global_distance = 0
+global_steps = 0
+step_timer_start = utime.time()
+
+
+
+
+#//////////////////// parameters ////////////////////
+
+# CLICK_THRESHOLD: adjust this number for the sensitivity of the 'click' force
+# this strongly depend on the range! for 16G, try 5-10
+# for 8G, try 10-20. for 4G try 20-40. for 2G try 40-80
+CLICK_THRESHOLD = 80
+
+ACCEL_NUM_SAMPLES = 10
+ACCEL_READ_INTERVAL = 0.1
+ACCEL_STATIONARY_MARGIN = 0.1
+
+STEP_THRESHOLD = 1.4                    # unit: mm s^-2. For step detection
+STEP_MAX_RPM = 120                      # max assumed cadence
+STEP_MIN_INTERVAL = 60 / STEP_MAX_RPM   # unit: second. For min cooldown between steps to avoid multiple step detection
 
 
 
@@ -118,20 +140,84 @@ def set_data_rate(data_rate):
     ctl1 |= (data_rate << 4)
     write_mem_8(LIS3DH_REG_CTRL1, ctl1)
 
-def read_from_sensor(): # read x y z at once
-    data = {}
-
-    x_MSB = read_mem_8(LIS3DH_REG_OUT_X_H) # read X high byte register
-    x_LSB = read_mem_8(LIS3DH_REG_OUT_X_L) # read X low byte register
+def get_accel(): # read x y z at once
+    # read data
+    x_MSB = read_mem_8(LIS3DH_REG_OUT_X_H) # read x high byte register
+    x_LSB = read_mem_8(LIS3DH_REG_OUT_X_L) # read x low byte register
     y_MSB = read_mem_8(LIS3DH_REG_OUT_Y_H)
     y_LSB = read_mem_8(LIS3DH_REG_OUT_Y_L)
     z_MSB = read_mem_8(LIS3DH_REG_OUT_Z_H)
     z_LSB = read_mem_8(LIS3DH_REG_OUT_Z_L)
 
-    data['x'] = (uint16_to_int16((x_MSB << 8) | (x_LSB))/divider)
-    data['y'] = (uint16_to_int16((y_MSB << 8) | (y_LSB))/divider)
-    data['z'] = (uint16_to_int16((z_MSB << 8) | (z_LSB))/divider)
+    # calculation
+    global global_vel_x
+    global global_vel_y
+    global global_vel_z
+    global global_dist_x
+    global global_dist_y
+    global global_dist_z
+
+    accel_x = (uint16_to_int16((x_MSB << 8) | (x_LSB))/divider)
+    accel_y = (uint16_to_int16((y_MSB << 8) | (y_LSB))/divider)
+    accel_z = (uint16_to_int16((z_MSB << 8) | (z_LSB))/divider)
+    accel_mag = get_xyz_mag(accel_x, accel_y, accel_z)
+
+    # compile data
+    data = {}
+    data['mag'] = accel_mag
     
+    return data
+
+def set_click(c, click_thresh, time_limit = 10, time_latency = 20, time_window = 255):
+    if c == 0:          # disable int
+        r = read_mem_8(LIS3DH_REG_CTRL3)
+        r &= ~(0x80)    # turn off I1_CLICK
+        write_mem_8(LIS3DH_REG_CTRL3, r)
+        write_mem_8(LIS3DH_REG_CLICKCFG, 0)
+    else:
+        write_mem_8(LIS3DH_REG_CTRL3, 0x80) # turn on int1 click
+        write_mem_8(LIS3DH_REG_CTRL5, 0x08) # latch interrupt on int1
+        if c == 1:
+            write_mem_8(LIS3DH_REG_CLICKCFG, 0x15) # turn on all axes & single-click
+        elif c == 2:
+            write_mem_8(LIS3DH_REG_CLICKCFG, 0x2A) # turn on all axes & double-click
+
+        write_mem_8(LIS3DH_REG_CLICKTHS, click_thresh)      # arbitrary
+        write_mem_8(LIS3DH_REG_TIMELIMIT, time_limit)       # arbitrary
+        write_mem_8(LIS3DH_REG_TIMELATENCY, time_latency)   # arbitrary
+        write_mem_8(LIS3DH_REG_TIMEWINDOW, time_window)     # arbitrary
+
+def get_click_raw():
+    return read_mem_8(LIS3DH_REG_CLICKSRC)
+
+def get_click():
+    # read data
+    dclick = False
+    sclick = False
+    x = False
+    y = False
+    z = False
+    
+    raw = get_click_raw()
+    if (raw & 0x20):
+        dclick = True   # double-click
+    if (raw & 0x10):
+        sclick = True   # single-click
+    if (raw & 0x01):
+        x = True        # x-axis high
+    if (raw & 0x02):
+        y = True        # y-axis high
+    if (raw & 0x04):
+        z = True        # z-axis high
+
+    # compile data
+    data = {}
+    data['dclick'] = dclick
+    data['sclick'] = sclick
+    data['x'] = x
+    data['y'] = y
+    data['z'] = z
+
     return data
 
 def uint16_to_int16(uint16):
@@ -140,10 +226,26 @@ def uint16_to_int16(uint16):
         result -= 65536
     return result
 
+def set_range(range = 2):   # range = 2,4,8 or 16
+    r = LIS3DH_RANGE_2_G    # default
+    if range == 4:
+        r = LIS3DH_RANGE_4_G
+    elif range == 8:
+        r = LIS3DH_RANGE_8_G
+    elif range == 16:
+        r = LIS3DH_RANGE_16_G
+    reg_data = read_mem_8(LIS3DH_REG_CTRL4)
+    reg_data &= ~(0x30)
+    reg_data |= r << 4
+    write_mem_8(LIS3DH_REG_CTRL4, reg_data)
+
 def get_range():        # read the data format register to preserve bits
     r = read_mem_8(LIS3DH_REG_CTRL4)
     r = (r >> 4) & 0x03
     return r
+
+def get_xyz_mag(x, y, z): # return magnitude of a 3D vector
+    return math.pow(x, 2) + math.pow(y, 2) + math.pow(z, 2)
 
 def init_all_param():   # initialise all global parameters
     global divider
@@ -185,10 +287,33 @@ def addr_detected():
 
 # "public" functions
 
-def init():
+def init(range, ct):
     if not addr_detected():
         return False
     else:
         begin_i2c()
+        set_range(range)
+        set_click(2, click_thresh = ct)
         init_all_param()
         return True
+
+def get_steps():
+    # read raw data
+    raw_data = {}
+    raw_data['accel'] = get_accel()       # read x,y,z acceleration
+
+    # calculation (step detection)
+    global global_distance
+    global global_steps
+    global step_timer_start
+    if step_detected(raw_data) == True and utime.time() - step_timer_start >= STEP_MIN_INTERVAL:
+        global_steps += 1
+        step_timer_start = utime.time()  # reset step timer
+    
+    # compile data
+    d = global_steps
+    #utime.sleep(ACCEL_READ_INTERVAL)
+    return d
+
+def step_detected(data):     # return number of steps
+    return data['accel']['mag'] >= STEP_THRESHOLD
