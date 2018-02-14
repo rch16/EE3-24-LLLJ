@@ -14,18 +14,18 @@ import mqttpublisher as mp
 
 
 #//////////////////// class ///////////////////////////////////////////////////
-class User:                     # user data
+class User:                     # user data for calories estimation
     def __init__(self, _age, _weight, _height, _pace):
-        self.age =    _age       # unit: years
-        self.weight = _weight    # unit: kg
-        self.height = _height    # unit: m
-        self.pace =   _pace      # unit: km/h
+        self.age =    _age      # unit: years
+        self.weight = _weight   # unit: kg
+        self.height = _height   # unit: m
+        self.pace =   _pace     # unit: km/h
 
-        self.stride_length = 0   # unit: m. Length of stride
-        self.met           = 0   # metabolic equivalent of activity
-        self.cal_factor    = 0   # for estimating expended calories
+        self.stride_length = 0  # unit: m. Length of stride
+        self.met           = 0  # metabolic equivalent of activity
+        self.cal_factor    = 0  # for estimating expended calories
 
-        self.stride_length = self.height * 0.415 
+        self.stride_length = self.height * 0.415
 
         met_lookup = {0:2, 3.2:2.5, 4:3, 4.8:3.5, 6.4:5, 7.2:6.3, 8:5}
         for speed, m in met_lookup.items():
@@ -39,7 +39,7 @@ class User:                     # user data
 
 #//////////////////// variables ///////////////////////////////////////////////
 rtc = machine.RTC()                     # RTC clock
-rtc.datetime((2018,2,10,5,17,23,0,0))   # initialise
+rtc.datetime((2018,2,15,5,09,23,0,0))   # initialise
 
 u = User(20, 70, 1.80, 3.5)
 
@@ -85,9 +85,9 @@ def main():
         print('LIS3DH initialisation unsuccessful - is the sensor connected?')
         return
 
-    # if not mp.init():
-        # print('Error connecting to MQTT: connection timed out.')
-        # return
+    if not mp.init():
+        print('Error connecting to MQTT: connection timed out.')
+        return
 
     # display info about pedometer
     print(
@@ -97,19 +97,19 @@ def main():
         range: +/- {0}g.
     Distance
         unit: m
-    TMP007
-        unit: C (Celsius)
-        range: +/- 256C'''.format(lis3dh.range_g))
+TMP007
+    unit: C (Celsius)
+    range: +/- 256C'''.format(lis3dh.range_g))
 
     # keep reading data to keep everything updated, but transmission to MQTT is
     #   less frequent in order to reduce network traffic, as much of the data
-    #   is repeated
+    #   values are repeated
     send_timer = -SEND_INTERVAL
-    while True:     
+    while True:
         data = compile_data()
         if utime.time() - send_timer >= SEND_INTERVAL:
-            print(ujson.dumps(data))
-            # mp.publish(data)
+            # print(ujson.dumps(data))
+            mp.publish(data)
             send_timer = utime.time()
 
 

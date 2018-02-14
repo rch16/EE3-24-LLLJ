@@ -12,6 +12,7 @@ import ujson
 import math
 
 
+
 #//////////////////// constants ////////////////////
 # register addresses etc.
 LIS3DH_DEFAULT_ADDRESS  = 0x18 # default I2C address. If SDO/SA0 is 3V -> 0x19
@@ -93,6 +94,7 @@ GRAVITY = 9806.65 # unit: mm s^(-2)
 # this strongly depend on the range! for 16G, try 5-10
 # for 8G, try 10-20. for 4G try 20-40. for 2G try 40-80
 CLICK_THRESHOLD = 80
+
 ACCEL_NUM_SAMPLES = 10
 ACCEL_READ_INTERVAL = 0.1
 ACCEL_STATIONARY_MARGIN = 0.1

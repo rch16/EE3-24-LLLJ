@@ -5,7 +5,7 @@
 
 
 
-#//////////////////// imports ////////////////////
+#//////////////////// imports /////////////////////////////////////////////////
 from machine import Pin, I2C
 import utime
 import ujson
@@ -13,10 +13,10 @@ import math
 
 
 
-#//////////////////// constants ////////////////////
+#//////////////////// constants ///////////////////////////////////////////////
 # register addresses etc.
 LIS3DH_DEFAULT_ADDRESS  = 0x18 # default I2C address. If SDO/SA0 is 3V -> 0x19
-LIS3DH_DEVICE_ID        = 0x33 # device ID expected to be found in LIS3DH_REG_WHOAMI
+LIS3DH_DEVICE_ID        = 0x33 # expected device ID value in LIS3DH_REG_WHOAMI
 
 LIS3DH_REG_STATUS1      = 0x07 # registers
 LIS3DH_REG_OUTADC1_L    = 0x08
@@ -26,7 +26,7 @@ LIS3DH_REG_OUTADC2_H    = 0x0B
 LIS3DH_REG_OUTADC3_L    = 0x0C
 LIS3DH_REG_OUTADC3_H    = 0x0D
 LIS3DH_REG_INTCOUNT     = 0x0E
-LIS3DH_REG_WHOAMI       = 0x0F # register storing device ID (for checking if sensor connected)
+LIS3DH_REG_WHOAMI       = 0x0F # stores device ID (for checking sensor connected)
 LIS3DH_REG_TEMPCFG      = 0x1F
 LIS3DH_REG_CTRL1        = 0x20
 LIS3DH_REG_CTRL2        = 0x21
@@ -66,7 +66,8 @@ LIS3DH_AXIS_X           = 0x0  # axis
 LIS3DH_AXIS_Y           = 0x1
 LIS3DH_AXIS_Z           = 0x2
 
-LIS3DH_DATARATE_400_HZ          = 0b0111 # data rate: for setting bandwidth. 400Hz 
+# data rate: for setting bandwidth
+LIS3DH_DATARATE_400_HZ          = 0b0111 # 400Hz
 LIS3DH_DATARATE_200_HZ          = 0b0110 # 200Hz
 LIS3DH_DATARATE_100_HZ          = 0b0101 # 100Hz
 LIS3DH_DATARATE_50_HZ           = 0b0100 # 50Hz
@@ -80,7 +81,7 @@ LIS3DH_DATARATE_LOWPOWER_5KHZ   = 0b1001
 
 
 
-#//////////////////// variables ////////////////////
+#//////////////////// variables ///////////////////////////////////////////////
 _i2c_addr = LIS3DH_DEFAULT_ADDRESS
 _i2c_port = I2C(scl = Pin(5), sda = Pin(4), freq = 400000)
 
@@ -94,11 +95,11 @@ step_timer_start = utime.time()
 
 
 
-#//////////////////// parameters ////////////////////
+#//////////////////// parameters //////////////////////////////////////////////
 
 # CLICK_THRESHOLD: adjust this number for the sensitivity of the 'click' force
-# this strongly depend on the range! for 16G, try 5-10
-# for 8G, try 10-20. for 4G try 20-40. for 2G try 40-80
+#   this strongly depends on the range
+#   16G: 5-10, 8G: 10-20, 4G: 20-40, 2G: 40-80
 CLICK_THRESHOLD = 80
 
 ACCEL_NUM_SAMPLES = 10
@@ -106,33 +107,35 @@ ACCEL_READ_INTERVAL = 0.1
 ACCEL_STATIONARY_MARGIN = 0.1
 
 STEP_THRESHOLD = 1.4                    # unit: mm s^-2. For step detection
-STEP_MAX_RPM = 120                      # max assumed cadence
-STEP_MIN_INTERVAL = 60 / STEP_MAX_RPM   # unit: second. For min cooldown between steps to avoid multiple step detection
+STEP_MAX_RPM = 180                      # max assumed cadence
+# STEP_MIN_INTERVAL: the minimum cooldown time between consecutive steps to
+#   avoid detecting 1 steps as many step (due to vibration etc.)
+#   unit: second
+STEP_MIN_INTERVAL = 60 / STEP_MAX_RPM
 
 
 
-#//////////////////// functions ////////////////////
+#//////////////////// functions ///////////////////////////////////////////////
 
 ## "private" functions
 
-# begin I2C communication
-def begin_i2c():
+def begin_i2c():                                # begin I2C communication
     print("Begin I2C communication...")
-    
+
     device_id = read_mem_8(LIS3DH_REG_WHOAMI)
     #print('LIS3DH device_id: {0}'.format(hex(device_id)))
 
     if device_id != LIS3DH_DEVICE_ID:
         print("FAILURE: LIS3DH not detected at address {0}".format(hex(_i2c_addr)))
-        return False    # sensor not found
+        return False                            # sensor not found
     else:
         print("SUCCESS: LIS3DH detected at {0}".format(hex(_i2c_addr)))
-        write_mem_8(LIS3DH_REG_CTRL1, 0x07)       # enable all axes, normal mode
+        write_mem_8(LIS3DH_REG_CTRL1, 0x07)     # enable all axes, normal mode
         set_data_rate(LIS3DH_DATARATE_400_HZ)   # 400Hz rate
-        write_mem_8(LIS3DH_REG_CTRL4, 0x88)       # high res & BDU enabled
-        write_mem_8(LIS3DH_REG_CTRL3, 0x10)       # DRDY on INT1
-        write_mem_8(LIS3DH_REG_TEMPCFG, 0x80)     # enable adcs
-        return True     # sensor found and initialised
+        write_mem_8(LIS3DH_REG_CTRL4, 0x88)     # high res & BDU enabled
+        write_mem_8(LIS3DH_REG_CTRL3, 0x10)     # DRDY on INT1
+        write_mem_8(LIS3DH_REG_TEMPCFG, 0x80)   # enable adcs
+        return True                             # sensor found and initialised
 
 def set_data_rate(data_rate):
     ctl1 = read_mem_8(LIS3DH_REG_CTRL1)
@@ -140,10 +143,10 @@ def set_data_rate(data_rate):
     ctl1 |= (data_rate << 4)
     write_mem_8(LIS3DH_REG_CTRL1, ctl1)
 
-def get_accel(): # read x y z at once
+def get_accel():                            # read x y z at once
     # read data
-    x_MSB = read_mem_8(LIS3DH_REG_OUT_X_H) # read x high byte register
-    x_LSB = read_mem_8(LIS3DH_REG_OUT_X_L) # read x low byte register
+    x_MSB = read_mem_8(LIS3DH_REG_OUT_X_H)  # read x high byte register
+    x_LSB = read_mem_8(LIS3DH_REG_OUT_X_L)  # read x low byte register
     y_MSB = read_mem_8(LIS3DH_REG_OUT_Y_H)
     y_LSB = read_mem_8(LIS3DH_REG_OUT_Y_L)
     z_MSB = read_mem_8(LIS3DH_REG_OUT_Z_H)
@@ -165,7 +168,7 @@ def get_accel(): # read x y z at once
     # compile data
     data = {}
     data['mag'] = accel_mag
-    
+
     return data
 
 def set_click(c, click_thresh, time_limit = 10, time_latency = 20, time_window = 255):
@@ -197,7 +200,7 @@ def get_click():
     x = False
     y = False
     z = False
-    
+
     raw = get_click_raw()
     if (raw & 0x20):
         dclick = True   # double-click
@@ -275,7 +278,7 @@ def read_mem(reg_addr, nbytes):
         result = result << counter | char
         counter += 8
     return result
-    
+
 def read_mem_8(reg_addr):
     return read_mem(reg_addr, 1)
 
@@ -309,11 +312,8 @@ def get_steps():
     if step_detected(raw_data) == True and utime.time() - step_timer_start >= STEP_MIN_INTERVAL:
         global_steps += 1
         step_timer_start = utime.time()  # reset step timer
-    
-    # compile data
-    d = global_steps
-    #utime.sleep(ACCEL_READ_INTERVAL)
-    return d
+
+    return global_steps
 
 def step_detected(data):     # return number of steps
     return data['accel']['mag'] >= STEP_THRESHOLD
