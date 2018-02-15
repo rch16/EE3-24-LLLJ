@@ -1,11 +1,20 @@
 #!/usr/bin/python3.5
 
+
+
+#//////////////////// imports /////////////////////////////////////////////////
 import paho.mqtt.client as mqtt
 import json
 
+
+
+#//////////////////// parameters //////////////////////////////////////////////
 TOPIC = '/esys/LLLJ/pedometer'
 BROKER_ADDRESS = '192.168.0.10'
 
+
+
+#//////////////////// functions ///////////////////////////////////////////////
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
     print("Connected with result code "+str(rc))
@@ -16,11 +25,7 @@ def on_connect(client, userdata, flags, rc):
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
-    #print(msg.topic+" "+str(msg.payload))
-    #print(str(msg.payload))
-    data = msg.payload
-    #print(data)
-    process_data(data)
+    process_data(msg.payload)
 
 # Process received data
 def process_data(d):
@@ -33,6 +38,7 @@ Temperature: {3} Celsius
 
 
 
+#//////////////////// main program ////////////////////////////////////////////
 client = mqtt.Client()
 client.on_connect = on_connect
 client.on_message = on_message
