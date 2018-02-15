@@ -4,15 +4,17 @@ EE3-24 Embedded Systems group project
 
 Group name: LLLJ
 
-Description:
-
-Coursework 1: use MicroPython to communicate between ESP8266 (WiFi module) and LIS3DH (motion sensor)
+| Coursework | Description |
+|-|-|
+| 1 | smart pedometer |
 
 ## Usage
 
-- install `ampy`
+- install `ampy` for Python 3
 
   `sudo pip3 install adafruit-ampy`
+
+- connect the sensors to ESP8266 via I2C
 
 - connect ESP8266 to a PC via USB
 
