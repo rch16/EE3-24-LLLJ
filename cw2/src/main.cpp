@@ -39,13 +39,17 @@ const int8_t stateMap[] = {0x07,0x05,0x03,0x04,0x01,0x00,0x02,0x07};
 //Phase lead to make motor spin
 const int8_t lead = 2;  //2 for forwards, -2 for backwards
 
+int8_t orState = 0;
+volatile int8_t intState = 0;
+volatile int8_t intStateOld = 0;
+
 //Status LED
 DigitalOut led1(LED1);
 
 //Photointerrupter inputs
-DigitalIn I1(I1pin);
-DigitalIn I2(I2pin);
-DigitalIn I3(I3pin);
+InterruptIn I1(I1pin);
+InterruptIn I2(I2pin);
+InterruptIn I3(I3pin);
 
 //Motor Drive outputs
 DigitalOut L1L(L1Lpin);
@@ -78,7 +82,7 @@ void motorOut(int8_t driveState){
     if (driveOut & 0x20) L3H = 0;
     }
     
-    //Convert photointerrupter inputs to a rotor state
+//Convert photointerrupter inputs to a rotor state
 inline int8_t readRotorState(){
     return stateMap[I1 + 2*I2 + 4*I3];
     }
@@ -92,16 +96,30 @@ int8_t motorHome() {
     //Get the rotor state
     return readRotorState();
 }
-    
+
+// motor ISR
+void motorISR() {
+    intState = readRotorState();
+    if (intState != intStateOld) {
+        intStateOld = intState;
+        motorOut((intState-orState+lead+6)%6); //+6 to make sure the remainder is positive
+    }
+}
+
 //Main
 int main() {
-    int8_t orState = 0;    //Rotot offset at motor state 0
-    int8_t intState = 0;
-    int8_t intStateOld = 0;
+    I1.rise(&motorISR);
+    I1.fall(&motorISR);
+    I2.rise(&motorISR);
+    I2.fall(&motorISR);
+    I3.rise(&motorISR);
+    I3.fall(&motorISR);
+    
+    //int8_t orState = 0;    //Rotot offset at motor state 0
     
     //Initialise the serial port
     Serial pc(SERIAL_TX, SERIAL_RX);
-    pc.printf("Hello\n\r");
+    pc.printf("Hello world!\n\r");
     
     //Run the motor synchronisation
     orState = motorHome();
@@ -109,11 +127,5 @@ int main() {
     //orState is subtracted from future rotor state inputs to align rotor and motor states
     
     //Poll the rotor state and set the motor outputs accordingly to spin the motor
-    while (1) {
-        intState = readRotorState();
-        if (intState != intStateOld) {
-            intStateOld = intState;
-            motorOut((intState-orState+lead+6)%6); //+6 to make sure the remainder is positive
-        }
-    }
+    while (1) {}
 }
