@@ -1,6 +1,7 @@
 //////////////////// Includes //////////////////////////////////////////////////
 #include "mbed.h"
-#include "Crypto.h"
+#include "Crypto.h" // hash
+#include "rtos.h"   // RTOS
 
 //////////////////// Variables /////////////////////////////////////////////////
 //Photointerrupter input pins
@@ -66,7 +67,115 @@ DigitalOut L3H(L3Hpin);
 
 //TImers
 Timer t_bitcoin;                /* for calculating hash computation rate */
- 
+
+//Threads
+Thread commOutT;  // output to serial
+Thread commInT;   // input from serial
+
+//Serial port
+RawSerial pc(SERIAL_TX, SERIAL_RX);
+
+//Mail
+enum MsgCode {
+    MSG_CODE_NONCE_MATCH,
+    MSG_CODE_COMP_RATE,
+    MSG_CODE_DECODED_KEY,
+    MSG_CODE_MISC
+};
+typedef struct {
+    MsgCode code;
+    uint32_t data;
+} message_t;
+Mail<message_t,16> outMessages;
+
+//Queue
+Queue<void, 8> inCharQ;
+
+//Serial command buffer
+char newCmd[64];
+volatile uint8_t newCmd_index = 0;
+
+//For passing key from command to bitcoin miner
+volatile uint64_t newKey;
+Mutex newKey_mutex; // prevent simultaneous access of newKey
+
+//////////////////// Function prototypes ///////////////////////////////////////
+void motorOut(int8_t driveState);
+inline int8_t readRotorState();
+int8_t motorHome();
+void motorISR();
+void commOutFn();
+void putMessage(MsgCode code, uint32_t data);
+void serialISR();
+void commInFn();
+
+//////////////////// Main //////////////////////////////////////////////////////
+int main() {
+    /* Initialisation */
+    pc.printf("\n\rHello world!\n\r");
+    
+    //Start thread
+    commOutT.start(commOutFn);
+    commInT.start(commInFn);
+    
+    pc.attach(&serialISR);
+    
+    //Attach interrupt service routines to photointerrupters
+    I1.rise(&motorISR);
+    I1.fall(&motorISR);
+    I2.rise(&motorISR);
+    I2.fall(&motorISR);
+    I3.rise(&motorISR);
+    I3.fall(&motorISR);
+    
+    //Bitcoin
+    SHA256 sha;
+    const uint8_t sequence[] = {\
+        0x45,0x6D,0x62,0x65,0x64,0x64,0x65,0x64,\
+        0x20,0x53,0x79,0x73,0x74,0x65,0x6D,0x73,\
+        0x20,0x61,0x72,0x65,0x20,0x66,0x75,0x6E,\
+        0x20,0x61,0x6E,0x64,0x20,0x64,0x6F,0x20,\
+        0x61,0x77,0x65,0x73,0x6F,0x6D,0x65,0x20,\
+        0x74,0x68,0x69,0x6E,0x67,0x73,0x21,0x20,\
+        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,\
+        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+    };
+    uint64_t* key = (uint64_t*)((int)sequence + 48);
+    uint64_t* nonce = (uint64_t*)((int)sequence + 56);
+    uint8_t hash[32];
+    uint32_t hash_counter = 0;  // for calculating hash computation rate
+    
+    /* Run the motor synchronisation: orState is subtracted from future rotor
+       state inputs to align rotor and motor states */
+    orState = motorHome();
+    pc.printf("Rotor origin: %x\n\r", orState);
+    
+    /* Main loop */
+    t_bitcoin.start();          // start timer
+    while (1) {
+        // update key
+        newKey_mutex.lock();
+        *key = newKey;
+        newKey_mutex.unlock();
+        
+        // compute hash
+        sha.computeHash(hash, (uint8_t*)sequence, 64);
+        if(hash[0] == 0 && hash[1] == 0)
+            putMessage(MSG_CODE_NONCE_MATCH, *nonce);   // matching nonce
+        
+        // increment nonce value and counter
+        (*nonce)++;
+        hash_counter++;
+        
+        // report rate every second
+        if(t_bitcoin.read() >= 1) {
+            putMessage(MSG_CODE_COMP_RATE, hash_counter); // comp. rate
+            t_bitcoin.reset();  // reset timer
+            hash_counter = 0;   // reset counter
+        }
+    }
+}
+
 //////////////////// Functions /////////////////////////////////////////////////
 
 //Set a given drive state
@@ -107,7 +216,7 @@ int8_t motorHome() {
     return readRotorState();
 }
 
-// motor ISR
+// Motor ISR
 void motorISR() {
     int8_t intState = readRotorState();
     if (intState != intStateOld) {
@@ -117,58 +226,63 @@ void motorISR() {
     }
 }
 
-//////////////////// Main //////////////////////////////////////////////////////
-int main() {
-    //Attach interrupt service routines to photointerrupters
-    I1.rise(&motorISR);
-    I1.fall(&motorISR);
-    I2.rise(&motorISR);
-    I2.fall(&motorISR);
-    I3.rise(&motorISR);
-    I3.fall(&motorISR);
-    
-    //Bitcoin
-    SHA256 sha;
-    const uint8_t sequence[] = {\
-        0x45,0x6D,0x62,0x65,0x64,0x64,0x65,0x64,\
-        0x20,0x53,0x79,0x73,0x74,0x65,0x6D,0x73,\
-        0x20,0x61,0x72,0x65,0x20,0x66,0x75,0x6E,\
-        0x20,0x61,0x6E,0x64,0x20,0x64,0x6F,0x20,\
-        0x61,0x77,0x65,0x73,0x6F,0x6D,0x65,0x20,\
-        0x74,0x68,0x69,0x6E,0x67,0x73,0x21,0x20,\
-        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,\
-        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
-    };
-    uint64_t* key = (uint64_t*)((int)sequence + 48);
-    uint64_t* nonce = (uint64_t*)((int)sequence + 56);
-    uint8_t hash[32];
-    uint32_t hash_counter = 0;  // for calculating hash computation rate
-    
-    /* Initialise the serial port */
-    Serial pc(SERIAL_TX, SERIAL_RX);
-    pc.printf("\n\rHello world!\n\r");
-    
-    /* Run the motor synchronisation
-       orState is subtracted from future rotor state inputs to align rotor and
-       motor states */
-    orState = motorHome();
-    pc.printf("Rotor origin: %x\n\r",orState);
-    
-    /* Bitcoin mining (photointerrupter may also happen in this loop) */
-    t_bitcoin.start();          // start timer
+// Print message in queue
+void commOutFn() {
+    while(1) {
+        osEvent newEvent = outMessages.get();
+        message_t *pMessage = (message_t*)newEvent.value.p;
+          
+        if(pMessage->code == MSG_CODE_NONCE_MATCH) {
+            pc.printf("Nonce:\t\t0x%016x\n\r", pMessage->data);
+        } else if(pMessage->code == MSG_CODE_COMP_RATE) {
+            pc.printf("Rate:\t\t%d per sec\n\r", pMessage->data);
+        } else if(pMessage->code == MSG_CODE_DECODED_KEY) {
+            pc.printf("New key:\t0x%016x\n\r", pMessage->data);
+        } else {
+            pc.printf("Message %d, data 0x%016x\n\r", pMessage->code,\
+                pMessage->data);
+        }
+        outMessages.free(pMessage);
+    }
+}
+
+// Adding message to Mail queue
+void putMessage(MsgCode code, uint32_t data){
+    message_t *pMessage = outMessages.alloc();
+    pMessage->code = code;
+    pMessage->data = data;
+    outMessages.put(pMessage);
+}
+
+// Receive & decode input command
+void commInFn() {
     while (1) {
-        sha.computeHash(hash, (uint8_t*)sequence, 64);
-        if(hash[0] == 0 && hash[1] == 0)            // if nonce is found
-            printf("Nonce: 0x%016llX\n\r", *nonce);
-            
-        (*nonce)++;         // increment nonce value
-        hash_counter++;     // increment counter
+        osEvent newEvent = inCharQ.get();
+        uint8_t newChar = (uint8_t)newEvent.value.p;
         
-        if(t_bitcoin.read() >= 1) {                 // check if 1 second passed
-            //printf("Computation rate per second: %d\n\r", hash_counter);
-            printf("Comp. rate: %d\n\r", hash_counter);// report rate per second
-            t_bitcoin.reset();  // reset timer
-            hash_counter = 0;   // reset counter
+        if (newChar == '\r') { // end of command
+            newCmd[newCmd_index] = '\0';
+            newCmd_index = 0; // reset index
+            
+            // check first letter
+            if (newCmd[0] == 'K') {
+                newKey_mutex.lock();
+                sscanf(newCmd, "K%x", &newKey); // decode the command
+                putMessage(MSG_CODE_DECODED_KEY, newKey);
+                newKey_mutex.unlock();
+            }
+            
+            newCmd[0] = '0'; // clear first char
+            
+        } else {
+            newCmd[newCmd_index] = newChar;
+            if (newCmd_index++ >= 64) newCmd_index = 0; // buffer overflow
         }
     }
+}
+
+// Serial ISR
+void serialISR() {
+    uint8_t newChar = pc.getc();
+    inCharQ.put((void*)newChar);
 }
