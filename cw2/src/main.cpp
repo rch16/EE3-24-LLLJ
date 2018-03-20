@@ -69,8 +69,9 @@ DigitalOut L3H(L3Hpin);
 Timer t_bitcoin;                /* for calculating hash computation rate */
 
 //Threads
-Thread commOutT;  // output to serial
-Thread commInT;   // input from serial
+Thread commOutT(osPriorityAboveNormal,1024);  // output to serial
+Thread commInT(osPriorityAboveNormal,1024);   // input from serial
+Thread motorCtrlT(osPriorityNormal,1024);
 
 //Serial port
 RawSerial pc(SERIAL_TX, SERIAL_RX);
@@ -81,6 +82,7 @@ enum MsgCode {
     MSG_CODE_COMP_RATE,
     MSG_CODE_DECODED_KEY,
     MSG_CODE_DECODED_TORQUE,
+    MSG_CODE_VEL,
     MSG_CODE_MISC
 };
 typedef struct {
@@ -101,17 +103,22 @@ volatile uint64_t newKey;
 Mutex newKey_mutex; // prevent simultaneous access of newKey
 
 //Global torque
-volatile uint32_t newTorque = 0x7FFFFFFF;
+volatile uint32_t motorPower = 0x7FFFFFFF;
 
 //////////////////// Function prototypes ///////////////////////////////////////
 void motorOut(int8_t driveState, uint32_t torque);
 inline int8_t readRotorState();
 int8_t motorHome();
 void motorISR();
+
 void commOutFn();
 void putMessage(MsgCode code, uint32_t data);
+
 void serialISR();
 void commInFn();
+
+void motorCtrlFn();
+void motorCtrlTick(); //ISR triggered by Ticker
 
 //////////////////// Main //////////////////////////////////////////////////////
 int main() {
@@ -121,6 +128,7 @@ int main() {
     //Start thread
     commOutT.start(commOutFn);
     commInT.start(commInFn);
+    motorCtrlT.start(motorCtrlFn);
     
     //Attach ISR to serial
     pc.attach(&serialISR);
@@ -228,13 +236,24 @@ int8_t motorHome() {
 }
 
 // Motor ISR
+/*
 void motorISR() {
     int8_t intState = readRotorState();
     if (intState != intStateOld) {
         intStateOld = intState;
-        motorOut((intState-orState+lead+6)%6,newTorque);
+        motorOut((intState-orState+lead+6)%6,motorPower);
         //+6 to make sure the remainder is positive
     }
+}*/
+int32_t motorPosition;
+void motorISR() {
+    static int8_t oldRotorState;
+    int8_t rotorState = readRotorState();
+    motorOut((rotorState-orState+lead+6)%6,motorPower);
+    if (rotorState - oldRotorState == 5) motorPosition--;
+    else if (rotorState - oldRotorState == -5) motorPosition++;
+    else motorPosition += (rotorState - oldRotorState);
+    oldRotorState = rotorState;
 }
 
 // Print message in queue
@@ -251,6 +270,8 @@ void commOutFn() {
             pc.printf("New key:\t0x%016x\n\r", pMessage->data);
         } else if(pMessage->code == MSG_CODE_DECODED_TORQUE) {
             pc.printf("New torque:\t%d\n\r", pMessage->data);
+        } else if(pMessage->code == MSG_CODE_VEL) {
+            pc.printf("Velocty:\t%d\n\r", pMessage->data);
         } else {
             pc.printf("Message %d, data 0x%016x\n\r", pMessage->code,\
                 pMessage->data);
@@ -284,8 +305,8 @@ void commInFn() {
                 putMessage(MSG_CODE_DECODED_KEY, newKey);
                 newKey_mutex.unlock();
             } else if (newCmd[0] == 'R') {  // motor torque (max signed 3 digit)
-                sscanf(newCmd, "R%d", &newTorque); // decode the command
-                putMessage(MSG_CODE_DECODED_TORQUE, newTorque);
+                sscanf(newCmd, "R%d", &motorPower); // decode the command
+                putMessage(MSG_CODE_DECODED_TORQUE, motorPower);
             }
             
             newCmd[0] = '0'; // clear first char
@@ -301,4 +322,27 @@ void commInFn() {
 void serialISR() {
     uint8_t newChar = pc.getc();
     inCharQ.put((void*)newChar);
+}
+
+volatile uint8_t motorCtrl_counter = 0;
+
+int32_t motorPositionOld = 0;
+// For motor control thread
+void motorCtrlFn() {
+    Ticker motorCtrlTicker;
+    motorCtrlTicker.attach_us(&motorCtrlTick,100000);
+    while(1) {
+        motorCtrlT.signal_wait(0x1);
+        int32_t velocity = (motorPosition - motorPositionOld) * 10;
+        motorPositionOld = motorPosition;
+        if (motorCtrl_counter++ >= 10) {
+            motorCtrl_counter = 0;
+            putMessage(MSG_CODE_VEL, velocity);
+        }
+    }
+}
+
+// ISR triggered by Ticker
+void motorCtrlTick(){
+    motorCtrlT.signal_set(0x1);
 }
