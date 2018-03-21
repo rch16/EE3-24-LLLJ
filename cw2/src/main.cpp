@@ -58,20 +58,20 @@ InterruptIn I2(I2pin);
 InterruptIn I3(I3pin);
 
 //Motor Drive outputs
-PwmOut L1L(L1Lpin);
+PwmOut     L1L(L1Lpin);
 DigitalOut L1H(L1Hpin);
-PwmOut L2L(L2Lpin);
+PwmOut     L2L(L2Lpin);
 DigitalOut L2H(L2Hpin);
-PwmOut L3L(L3Lpin);
+PwmOut     L3L(L3Lpin);
 DigitalOut L3H(L3Hpin);
 
 //TImers
-Timer t_bitcoin;                /* for calculating hash computation rate */
+Timer t_bitcoin;                // for calculating hash computation rate
 
 //Threads
-Thread commOutT(osPriorityAboveNormal,1024);  // output to serial
-Thread commInT(osPriorityAboveNormal,1024);   // input from serial
-Thread motorCtrlT(osPriorityNormal,1024);
+Thread commOutT(    osPriorityAboveNormal,1024);  // output to serial
+Thread commInT(     osPriorityAboveNormal,1024);  // input from serial
+Thread motorCtrlT(  osPriorityNormal,     1024);  // motor control
 
 //Serial port
 RawSerial pc(SERIAL_TX, SERIAL_RX);
@@ -82,7 +82,8 @@ enum MsgCode {
     MSG_CODE_COMP_RATE,
     MSG_CODE_DECODED_KEY,
     MSG_CODE_DECODED_TORQUE,
-    MSG_CODE_VEL,
+    MSG_CODE_REPORT_VEL,
+    MSG_CODE_REPORT_POS,
     MSG_CODE_MISC
 };
 typedef struct {
@@ -95,18 +96,20 @@ Mail<message_t,16> outMessages;
 Queue<void, 8> inCharQ;
 
 //Serial command buffer
-char newCmd[64];
+#define MAX_CMD_LEN 64
+char newCmd[MAX_CMD_LEN];
 volatile uint8_t newCmd_index = 0;
 
 //For passing key from command to bitcoin miner
-volatile uint64_t newKey;
-Mutex newKey_mutex; // prevent simultaneous access of newKey
+volatile uint64_t newKey;   // new mining key
+Mutex newKey_mutex;         // prevent simultaneous access of newKey
 
-//Global torque
-volatile uint32_t motorPower = 0x7FFFFFFF;
+#define MAX_PWM_PULSEWIDTH_US 1000
+volatile uint32_t motorPower = 300; // motor toque
+volatile int32_t  motorPosition; // current motor position (updated by motorISR)
 
 //////////////////// Function prototypes ///////////////////////////////////////
-void motorOut(int8_t driveState, uint32_t torque);
+void motorOut(int8_t driveState, uint32_t pw);
 inline int8_t readRotorState();
 int8_t motorHome();
 void motorISR();
@@ -125,15 +128,15 @@ int main() {
     /* Initialisation */
     pc.printf("\n\rHello world!\n\r");
     
-    //Start thread
+    // Start thread
     commOutT.start(commOutFn);
     commInT.start(commInFn);
     motorCtrlT.start(motorCtrlFn);
     
-    //Attach ISR to serial
+    // Attach ISR to serial
     pc.attach(&serialISR);
     
-    //Attach ISR to photointerrupters
+    // Attach ISR to photointerrupters
     I1.rise(&motorISR);
     I1.fall(&motorISR);
     I2.rise(&motorISR);
@@ -141,7 +144,7 @@ int main() {
     I3.rise(&motorISR);
     I3.fall(&motorISR);
     
-    //Bitcoin variables
+    // Declare bitcoin variables
     SHA256 sha;
     const uint8_t sequence[] = {\
         0x45,0x6D,0x62,0x65,0x64,0x64,0x65,0x64,\
@@ -158,8 +161,8 @@ int main() {
     uint8_t hash[32];
     uint32_t hash_counter = 0;  // for calculating hash computation rate
     
-    //Set PWM period
-    // CAUTION: duty cycle must be limited to 0-50% due to bug
+    // Set PWM period
+    // CAUTION: duty cycle must be limited to 0-50% due to hardware limitation
     L1L.period_us(2000); // set to 2000us
     L2L.period_us(2000);
     L3L.period_us(2000);
@@ -198,7 +201,7 @@ int main() {
 //////////////////// Functions /////////////////////////////////////////////////
 
 //Set a given drive state
-void motorOut(int8_t driveState, uint32_t torque){
+void motorOut(int8_t driveState, uint32_t pw){
     
     //Lookup the output byte from the drive state.
     int8_t driveOut = driveTable[driveState & 0x07];
@@ -212,11 +215,11 @@ void motorOut(int8_t driveState, uint32_t torque){
     if (~driveOut & 0x20) L3H = 1;
     
     //Then turn on
-    if (driveOut & 0x01) L1L.pulsewidth_us(torque);
+    if (driveOut & 0x01) L1L.pulsewidth_us(pw);
     if (driveOut & 0x02) L1H = 0;
-    if (driveOut & 0x04) L2L.pulsewidth_us(torque);
+    if (driveOut & 0x04) L2L.pulsewidth_us(pw);
     if (driveOut & 0x08) L2H = 0;
-    if (driveOut & 0x10) L3L.pulsewidth_us(torque);
+    if (driveOut & 0x10) L3L.pulsewidth_us(pw);
     if (driveOut & 0x20) L3H = 0;
 }
     
@@ -228,24 +231,14 @@ inline int8_t readRotorState(){
 //Basic synchronisation routine    
 int8_t motorHome() {
     //Put the motor in drive state 0 and wait for it to stabilise
-    motorOut(0, 0x7FFFFFFF); // set to max PWM
+    motorOut(0, MAX_PWM_PULSEWIDTH_US); // set to max PWM
     wait(2.0);
     
     //Get the rotor state
     return readRotorState();
 }
 
-// Motor ISR
-/*
-void motorISR() {
-    int8_t intState = readRotorState();
-    if (intState != intStateOld) {
-        intStateOld = intState;
-        motorOut((intState-orState+lead+6)%6,motorPower);
-        //+6 to make sure the remainder is positive
-    }
-}*/
-int32_t motorPosition;
+// Motor ISR (photointerrupters)
 void motorISR() {
     static int8_t oldRotorState;
     int8_t rotorState = readRotorState();
@@ -262,19 +255,30 @@ void commOutFn() {
         osEvent newEvent = outMessages.get();
         message_t *pMessage = (message_t*)newEvent.value.p;
           
-        if(pMessage->code == MSG_CODE_NONCE_MATCH) {
-            pc.printf("Nonce:\t\t0x%016x\n\r", pMessage->data);
-        } else if(pMessage->code == MSG_CODE_COMP_RATE) {
-            pc.printf("Rate:\t\t%d per sec\n\r", pMessage->data);
-        } else if(pMessage->code == MSG_CODE_DECODED_KEY) {
-            pc.printf("New key:\t0x%016x\n\r", pMessage->data);
-        } else if(pMessage->code == MSG_CODE_DECODED_TORQUE) {
-            pc.printf("New torque:\t%d\n\r", pMessage->data);
-        } else if(pMessage->code == MSG_CODE_VEL) {
-            pc.printf("Velocty:\t%d\n\r", pMessage->data);
-        } else {
-            pc.printf("Message %d, data 0x%016x\n\r", pMessage->code,\
-                pMessage->data);
+        switch(pMessage->code) {
+            case MSG_CODE_NONCE_MATCH:
+                pc.printf("Nonce found:\t0x%016x\n\r", pMessage->data);
+                break;
+            case MSG_CODE_COMP_RATE:
+                pc.printf("Mining rate:\t%u hashes per second\n\r", \
+                    pMessage->data);
+                break;
+            case MSG_CODE_DECODED_KEY:
+                pc.printf("New key:\t0x%016x\n\r", pMessage->data);
+                break;
+            case MSG_CODE_DECODED_TORQUE:
+                pc.printf("New torque:\t%d\n\r", pMessage->data);
+                break;
+            case MSG_CODE_REPORT_VEL:
+                pc.printf("Velocty:\t%d\n\r", pMessage->data);
+                break;
+            case MSG_CODE_REPORT_POS:
+                pc.printf("Position:\t%d\n\r", pMessage->data);
+                break;
+            default:
+                pc.printf("Message %d, data 0x%016x\n\r", pMessage->code,\
+                    pMessage->data);
+                break;
         }
         outMessages.free(pMessage);
     }
@@ -298,22 +302,27 @@ void commInFn() {
             newCmd[newCmd_index] = '\0';
             newCmd_index = 0; // reset index
             
-            // check first letter
-            if (newCmd[0] == 'K') {             // new key
-                newKey_mutex.lock();
-                sscanf(newCmd, "K%x", &newKey); // decode the command
-                putMessage(MSG_CODE_DECODED_KEY, newKey);
-                newKey_mutex.unlock();
-            } else if (newCmd[0] == 'R') {  // motor torque (max signed 3 digit)
-                sscanf(newCmd, "R%d", &motorPower); // decode the command
-                putMessage(MSG_CODE_DECODED_TORQUE, motorPower);
+            // decode the command
+            switch(newCmd[0]) {             // check first char
+                case 'K':                   // new key
+                    newKey_mutex.lock();
+                    sscanf(newCmd, "K%x", &newKey);
+                    putMessage(MSG_CODE_DECODED_KEY, newKey);
+                    newKey_mutex.unlock();
+                    break;
+                case 'T':                   // motor torque (max signed 3 digit)
+                    sscanf(newCmd, "T%d", &motorPower);
+                    putMessage(MSG_CODE_DECODED_TORQUE, motorPower);
+                    break;
+                default:
+                    break;
             }
-            
             newCmd[0] = '0'; // clear first char
             
         } else {
             newCmd[newCmd_index] = newChar;
-            if (newCmd_index++ >= 64) newCmd_index = 0; // buffer overflow
+            if (newCmd_index++ >= MAX_CMD_LEN) // if overflow
+                newCmd_index = MAX_CMD_LEN - 1;// keep overwriting last char
         }
     }
 }
@@ -324,20 +333,20 @@ void serialISR() {
     inCharQ.put((void*)newChar);
 }
 
-volatile uint8_t motorCtrl_counter = 0;
 
-int32_t motorPositionOld = 0;
 // For motor control thread
 void motorCtrlFn() {
     Ticker motorCtrlTicker;
     motorCtrlTicker.attach_us(&motorCtrlTick,100000);
+    static uint8_t motorCtrl_counter = 0;
+    static int32_t motorPositionOld = 0;
     while(1) {
         motorCtrlT.signal_wait(0x1);
         int32_t velocity = (motorPosition - motorPositionOld) * 10;
         motorPositionOld = motorPosition;
         if (motorCtrl_counter++ >= 10) {
             motorCtrl_counter = 0;
-            putMessage(MSG_CODE_VEL, velocity);
+            putMessage(MSG_CODE_REPORT_VEL, velocity);
         }
     }
 }
