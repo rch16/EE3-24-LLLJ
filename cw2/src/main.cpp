@@ -43,7 +43,7 @@ const int8_t stateMap[] = {0x07,0x05,0x03,0x04,0x01,0x00,0x02,0x07};
   //Alternative if phase order of input or drive is reversed
 
 //Phase lead to make motor spin
-const int8_t lead = 2;  //2 for forwards, -2 for backwards
+int8_t lead = 2;  //2 for forwards, -2 for backwards
 
 //Rotor states
 int8_t orState = 0;              /* Rotot offset at motor state 0 */
@@ -82,6 +82,7 @@ enum MsgCode {
     MSG_CODE_COMP_RATE,
     MSG_CODE_DECODED_KEY,
     MSG_CODE_DECODED_TORQUE,
+    MSG_CODE_DECODED_VEL,
     MSG_CODE_REPORT_VEL,
     MSG_CODE_REPORT_POS,
     MSG_CODE_MISC
@@ -107,6 +108,8 @@ Mutex newKey_mutex;         // prevent simultaneous access of newKey
 #define MAX_PWM_PULSEWIDTH_US 1000
 volatile uint32_t motorPower = 300; // motor toque
 volatile int32_t  motorPosition; // current motor position (updated by motorISR)
+volatile float targetVelocity = 50;
+volatile float targetPosition = 1000;
 
 //////////////////// Function prototypes ///////////////////////////////////////
 void motorOut(int8_t driveState, uint32_t pw);
@@ -170,7 +173,10 @@ int main() {
     /* Run the motor synchronisation: orState is subtracted from future rotor
        state inputs to align rotor and motor states */
     orState = motorHome();
-    pc.printf("Rotor origin: %x\n\r", orState);
+    //pc.printf("Rotor origin: %x\n\r", orState);
+    
+    // Initial jolt
+    motorISR();
     
     /* Main loop */
     t_bitcoin.start();          // start timer
@@ -242,7 +248,10 @@ int8_t motorHome() {
 void motorISR() {
     static int8_t oldRotorState;
     int8_t rotorState = readRotorState();
+    
     motorOut((rotorState-orState+lead+6)%6,motorPower);
+    
+    // update motorPosition and oldRotorState
     if (rotorState - oldRotorState == 5) motorPosition--;
     else if (rotorState - oldRotorState == -5) motorPosition++;
     else motorPosition += (rotorState - oldRotorState);
@@ -269,11 +278,16 @@ void commOutFn() {
             case MSG_CODE_DECODED_TORQUE:
                 pc.printf("New torque:\t%d\n\r", pMessage->data);
                 break;
+            case MSG_CODE_DECODED_VEL:
+                pc.printf("New target velocity:\t%.2f\n\r", targetVelocity);
+                break;
             case MSG_CODE_REPORT_VEL:
-                pc.printf("Velocty:\t%d\n\r", pMessage->data);
+                pc.printf("Velocity:\t%.2f\n\r", \
+                    (float)((int32_t)pMessage->data / 6));
                 break;
             case MSG_CODE_REPORT_POS:
-                pc.printf("Position:\t%d\n\r", pMessage->data);
+                pc.printf("Position:\t%.2f\n\r", \
+                    (float)((int32_t)pMessage->data / 6));
                 break;
             default:
                 pc.printf("Message %d, data 0x%016x\n\r", pMessage->code,\
@@ -310,10 +324,15 @@ void commInFn() {
                     putMessage(MSG_CODE_DECODED_KEY, newKey);
                     newKey_mutex.unlock();
                     break;
-                case 'T':                   // motor torque (max signed 3 digit)
+                case 'T':                   // motor torque
                     sscanf(newCmd, "T%d", &motorPower);
                     putMessage(MSG_CODE_DECODED_TORQUE, motorPower);
                     break;
+                case 'V':                   // set motor velocity
+                    sscanf(newCmd, "V%f", &targetVelocity);
+                    putMessage(MSG_CODE_DECODED_VEL, targetVelocity);
+                    break;
+                    
                 default:
                     break;
             }
@@ -338,16 +357,63 @@ void serialISR() {
 void motorCtrlFn() {
     Ticker motorCtrlTicker;
     motorCtrlTicker.attach_us(&motorCtrlTick,100000);
-    static uint8_t motorCtrl_counter = 0;
+    
+    // local variables
+    int32_t vel;
+    int32_t motorPosition_local;
     static int32_t motorPositionOld = 0;
+    static uint8_t motorCtrl_counter = 0;
+    int32_t torque;
+    
     while(1) {
+        // wait for signal
         motorCtrlT.signal_wait(0x1);
-        int32_t velocity = (motorPosition - motorPositionOld) * 10;
-        motorPositionOld = motorPosition;
+        
+        // measure velocity
+        motorPosition_local = motorPosition;
+        vel = (motorPosition_local - motorPositionOld) * 10;
+        
+        // update old motor position
+        motorPositionOld = motorPosition_local;
+
+        // report measured velocity every second
         if (motorCtrl_counter++ >= 10) {
-            motorCtrl_counter = 0;
-            putMessage(MSG_CODE_REPORT_VEL, velocity);
+            motorCtrl_counter = 0; // reset counter
+            putMessage(MSG_CODE_REPORT_VEL, vel);
+            putMessage(MSG_CODE_REPORT_POS, motorPosition_local);
         }
+        
+        /* speed controller
+           equation: y_s = k_p(s-|v|)
+           y_s: controller output (motorPower)
+           k_p: empirical constant
+           s  : target velocity (targetVelocity)
+           v  : measured velocity (vel) */
+        float   k_p  = 10;
+        int32_t s    = targetVelocity * 6; // access targetVelocity once
+        int32_t y_s;
+        
+        if (s == 0) {                       // set to max if V0
+            y_s = MAX_PWM_PULSEWIDTH_US;    // theoretical max speed: 66.7
+        } else {
+            y_s = (int)(k_p * ( s - abs(vel) ));
+        }
+        
+        // calculate torque
+        if (y_s > 0) {
+            torque = y_s;
+            lead = 2;
+        } else {
+            torque = -y_s;  // torque should be positive
+            lead = -2;      // reverse direction
+        }
+        if (torque > MAX_PWM_PULSEWIDTH_US)
+            torque = MAX_PWM_PULSEWIDTH_US; // set max value
+            
+        // output
+        motorPower = torque;   // access motorPower once
+        
+        if (vel == 0) motorISR(); // give jolt if velocity is 0
     }
 }
 
