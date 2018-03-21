@@ -107,10 +107,12 @@ volatile uint64_t newKey;   // new mining key
 Mutex newKey_mutex;         // prevent simultaneous access of newKey
 
 #define MAX_PWM_PULSEWIDTH_US 1000
-volatile uint32_t motorPower = 300; // motor toque
-volatile int32_t  motorPosition; // current motor position (updated by motorISR)
-volatile float targetVelocity = 50;
-volatile float targetRotation = 600;
+volatile uint32_t motorPower = MAX_PWM_PULSEWIDTH_US; // motor toque
+volatile float    motorVelocity; // current motor vel. (updated by controller)
+volatile float    motorPosition; // current motor pos. (updated by motorISR)
+volatile float    targetVelocity = 50;
+volatile float    targetPosition = 600;
+volatile float    targetRotation = 0;
 
 //////////////////// Function prototypes ///////////////////////////////////////
 void motorOut(int8_t driveState, uint32_t pw);
@@ -130,9 +132,13 @@ void motorCtrlTick(); //ISR triggered by Ticker
 //////////////////// Main //////////////////////////////////////////////////////
 int main() {
     /* Initialisation */
-    pc.printf("\n\rHello world!\n\r");
+    pc.printf("\n\r\n\rGroup: LLLJ\n\rMotor started\n\r");
+    pc.printf("Initial targets:\n\r");
+    pc.printf("\tVelocity:\t%f\n\r", targetVelocity);
+    pc.printf("\tPosition:\t%f\n\r", targetPosition);
+    pc.printf("\tRotation:\t%f\n\r", targetRotation);
     
-    // Start thread
+    // Start threads
     commOutT.start(commOutFn);
     commInT.start(commInFn);
     motorCtrlT.start(motorCtrlFn);
@@ -283,15 +289,13 @@ void commOutFn() {
                 pc.printf("New target velocity:\t%.1f\n\r", targetVelocity);
                 break;
             case MSG_CODE_DECODED_POS:
-                pc.printf("New target roation:\t%.2f\n\r", targetRotation);
+                pc.printf("New target roation:\t%.2f\n\r", targetPosition);
                 break;
             case MSG_CODE_REPORT_VEL:
-                pc.printf("Velocity:\t%.1f\n\r", \
-                    (float)((int32_t)pMessage->data / 6));
+                pc.printf("Velocity:\t%.1f\n\r", motorVelocity / 6);
                 break;
             case MSG_CODE_REPORT_POS:
-                pc.printf("Position:\t%.2f\n\r", \
-                    (float)((int32_t)pMessage->data / 6));
+                pc.printf("Position:\t%.2f\n\r", motorPosition / 6);
                 break;
             default:
                 pc.printf("Message %d, data 0x%016x\n\r", pMessage->code,\
@@ -322,19 +326,23 @@ void commInFn() {
             
             // decode the command
             switch(newCmd[0]) {             // check first char
-                case 'K':                   // new key
+                case 'K':                   // set new key
                     newKey_mutex.lock();
                     sscanf(newCmd, "K%x", &newKey);
                     putMessage(MSG_CODE_DECODED_KEY, newKey);
                     newKey_mutex.unlock();
                     break;
-                case 'T':                   // motor torque
+                case 'T':                   // set motor torque
                     sscanf(newCmd, "T%d", &motorPower);
                     putMessage(MSG_CODE_DECODED_TORQUE, motorPower);
                     break;
                 case 'V':                   // set target motor velocity
                     sscanf(newCmd, "V%f", &targetVelocity);
                     putMessage(MSG_CODE_DECODED_VEL, targetVelocity);
+                    break;
+                case 'P':                   // set target motor position
+                    sscanf(newCmd, "P%f", &targetPosition);
+                    putMessage(MSG_CODE_DECODED_POS, targetPosition);
                     break;
                 case 'R':                   // set target motor rotation
                     sscanf(newCmd, "R%f", &targetRotation);
@@ -367,34 +375,32 @@ void motorCtrlFn() {
     motorCtrlTicker.attach_us(&motorCtrlTick,100000);
     
     // local variables
-    int32_t vel;
-    int32_t motorPosition_local;
-    static int32_t motorPositionOld = 0;
+    float vel;      // local copy of motorVelocity
+    float pos;      // local copy of motorPosition
+    int32_t torque; // local copy of motorPower
     static uint8_t motorCtrl_counter = 0;
-    int32_t torque;
-    static float E_r_old;
+    static float   pos_old = 0;
+    static float   E_r_old;
     
     while(1) {
         // wait for signal
         motorCtrlT.signal_wait(0x1);
         
         // measure velocity
-        motorPosition_local = motorPosition;
-        vel = (motorPosition_local - motorPositionOld) * 10;
-        
-        // update old motor position
-        motorPositionOld = motorPosition_local;
+        pos = motorPosition;        // read motorPosition ONCE
+        vel = (pos - pos_old) * 10; // calculate velocity
+        pos_old = pos;              // update old motor position
+        motorVelocity = vel;        // write motorVelocity ONCE
 
         // report measured velocity every second
         if (motorCtrl_counter++ >= 10) {
-            motorCtrl_counter = 0; // reset counter
-            putMessage(MSG_CODE_REPORT_VEL, vel);
-            putMessage(MSG_CODE_REPORT_POS, motorPosition_local);
+            motorCtrl_counter = 0;                  // reset counter
+            putMessage(MSG_CODE_REPORT_VEL, vel);   // report
+            putMessage(MSG_CODE_REPORT_POS, pos);
         }
         
         // speed & position control
-        
-        float   E_r  = targetRotation - motorPosition / 6; // access targetRotation once
+        float   E_r  = targetPosition - pos / 6; // access targetPosition ONCE
         
         /* speed controller
            equation: y_s = k_p(s-|v|)sgn(E_r)
@@ -403,15 +409,11 @@ void motorCtrlFn() {
            s  : target velocity (targetVelocity)
            v  : measured velocity (vel)
            E_r: position error */
-        int32_t s    = targetVelocity * 6; // access targetVelocity once
+        int32_t s    = targetVelocity * 6;      // access targetVelocity ONCE
         int32_t y_s;
-        
-        if (s == 0) {                       // set to max if V0
-            y_s = MAX_PWM_PULSEWIDTH_US;    // theoretical max speed: 66.7
-        } else {                            // calculate as normal
-            y_s = (int)(10 * ( s - abs(vel) ));
-        }
-        if (E_r < 0) y_s = -y_s;            // multiply by sgn(E_r)
+        if (s == 0) y_s = MAX_PWM_PULSEWIDTH_US;        // set to max if V0
+        else        y_s = (int)(10 * ( s - abs(vel) )); // calculate as normal
+        if (E_r < 0) y_s = -y_s;                        // multiply by sgn(E_r)
         
         /* position controller
            equation: y_r = k_p*E_r + k_d*(d E_r/dt)
@@ -441,7 +443,7 @@ void motorCtrlFn() {
             torque = MAX_PWM_PULSEWIDTH_US; // set max value
             
         // output
-        motorPower = torque;   // access motorPower once
+        motorPower = torque;   // write motorPower ONCE
         
         if (vel == 0) motorISR(); // give jolt if velocity is 0
     }
