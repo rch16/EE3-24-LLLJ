@@ -83,6 +83,7 @@ enum MsgCode {
     MSG_CODE_DECODED_KEY,
     MSG_CODE_DECODED_TORQUE,
     MSG_CODE_DECODED_VEL,
+    MSG_CODE_DECODED_POS,
     MSG_CODE_REPORT_VEL,
     MSG_CODE_REPORT_POS,
     MSG_CODE_MISC
@@ -109,7 +110,7 @@ Mutex newKey_mutex;         // prevent simultaneous access of newKey
 volatile uint32_t motorPower = 300; // motor toque
 volatile int32_t  motorPosition; // current motor position (updated by motorISR)
 volatile float targetVelocity = 50;
-volatile float targetPosition = 1000;
+volatile float targetRotation = 600;
 
 //////////////////// Function prototypes ///////////////////////////////////////
 void motorOut(int8_t driveState, uint32_t pw);
@@ -279,10 +280,13 @@ void commOutFn() {
                 pc.printf("New torque:\t%d\n\r", pMessage->data);
                 break;
             case MSG_CODE_DECODED_VEL:
-                pc.printf("New target velocity:\t%.2f\n\r", targetVelocity);
+                pc.printf("New target velocity:\t%.1f\n\r", targetVelocity);
+                break;
+            case MSG_CODE_DECODED_POS:
+                pc.printf("New target roation:\t%.2f\n\r", targetRotation);
                 break;
             case MSG_CODE_REPORT_VEL:
-                pc.printf("Velocity:\t%.2f\n\r", \
+                pc.printf("Velocity:\t%.1f\n\r", \
                     (float)((int32_t)pMessage->data / 6));
                 break;
             case MSG_CODE_REPORT_POS:
@@ -328,9 +332,13 @@ void commInFn() {
                     sscanf(newCmd, "T%d", &motorPower);
                     putMessage(MSG_CODE_DECODED_TORQUE, motorPower);
                     break;
-                case 'V':                   // set motor velocity
+                case 'V':                   // set target motor velocity
                     sscanf(newCmd, "V%f", &targetVelocity);
                     putMessage(MSG_CODE_DECODED_VEL, targetVelocity);
+                    break;
+                case 'R':                   // set target motor rotation
+                    sscanf(newCmd, "R%f", &targetRotation);
+                    putMessage(MSG_CODE_DECODED_POS, targetRotation);
                     break;
                     
                 default:
@@ -364,6 +372,7 @@ void motorCtrlFn() {
     static int32_t motorPositionOld = 0;
     static uint8_t motorCtrl_counter = 0;
     int32_t torque;
+    static float E_r_old;
     
     while(1) {
         // wait for signal
@@ -383,29 +392,50 @@ void motorCtrlFn() {
             putMessage(MSG_CODE_REPORT_POS, motorPosition_local);
         }
         
+        // speed & position control
+        
+        float   E_r  = targetRotation - motorPosition / 6; // access targetRotation once
+        
         /* speed controller
-           equation: y_s = k_p(s-|v|)
+           equation: y_s = k_p(s-|v|)sgn(E_r)
            y_s: controller output (motorPower)
            k_p: empirical constant
            s  : target velocity (targetVelocity)
-           v  : measured velocity (vel) */
-        float   k_p  = 10;
+           v  : measured velocity (vel)
+           E_r: position error */
         int32_t s    = targetVelocity * 6; // access targetVelocity once
         int32_t y_s;
         
         if (s == 0) {                       // set to max if V0
             y_s = MAX_PWM_PULSEWIDTH_US;    // theoretical max speed: 66.7
+        } else {                            // calculate as normal
+            y_s = (int)(10 * ( s - abs(vel) ));
+        }
+        if (E_r < 0) y_s = -y_s;            // multiply by sgn(E_r)
+        
+        /* position controller
+           equation: y_r = k_p*E_r + k_d*(d E_r/dt)
+           y_r: controller output (motorPower)
+           E_r: position error
+           k_p,k_d: empirical constants */
+        int32_t y_r = (int)(10 * E_r - 20 * (E_r - E_r_old) );
+        E_r_old = E_r; // update old position error
+        
+        /* torque: choose y_r or y_s
+           y = max(y_s, y_r), v <  0
+               min(y_s, y_r), v >= 0 */
+        if (((vel < 0) && (y_s > y_r)) || ((vel >= 0) && (y_s < y_r))) {
+            torque = y_s;
         } else {
-            y_s = (int)(k_p * ( s - abs(vel) ));
+            torque = y_r;
         }
         
-        // calculate torque
-        if (y_s > 0) {
-            torque = y_s;
+        // direction
+        if (torque > 0) {
             lead = 2;
         } else {
-            torque = -y_s;  // torque should be positive
-            lead = -2;      // reverse direction
+            torque = -torque;  // torque should be positive
+            lead = -2;         // reverse direction
         }
         if (torque > MAX_PWM_PULSEWIDTH_US)
             torque = MAX_PWM_PULSEWIDTH_US; // set max value
