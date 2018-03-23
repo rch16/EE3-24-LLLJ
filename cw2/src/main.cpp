@@ -84,6 +84,7 @@ enum MsgCode {
     MSG_CODE_DECODED_TORQUE,
     MSG_CODE_DECODED_VEL,
     MSG_CODE_DECODED_POS,
+    MSG_CODE_DECODED_ROT,
     MSG_CODE_REPORT_VEL,
     MSG_CODE_REPORT_POS,
     MSG_CODE_MISC
@@ -112,7 +113,7 @@ volatile float    motorVelocity; // current motor vel. (updated by controller)
 volatile float    motorPosition; // current motor pos. (updated by motorISR)
 volatile float    targetVelocity = 50;
 volatile float    targetPosition = 600;
-volatile float    targetRotation = 0;
+volatile float    targetRotation = 0.001;
 
 //////////////////// Function prototypes ///////////////////////////////////////
 void motorOut(int8_t driveState, uint32_t pw);
@@ -145,8 +146,6 @@ int main() {
     
     // Attach ISR to serial
     pc.attach(&serialISR);
-    
-    
     
     // Declare bitcoin variables
     SHA256 sha;
@@ -289,7 +288,10 @@ void commOutFn() {
                 pc.printf("New target velocity:\t%.1f\n\r", targetVelocity);
                 break;
             case MSG_CODE_DECODED_POS:
-                pc.printf("New target roation:\t%.2f\n\r", targetPosition);
+                pc.printf("New target position:\t%.2f\n\r", targetPosition);
+                break;
+            case MSG_CODE_DECODED_ROT:
+                pc.printf("New target rotation:\t%.2f\n\r", targetRotation);
                 break;
             case MSG_CODE_REPORT_VEL:
                 pc.printf("Velocity:\t%.1f\n\r", motorVelocity / 6);
@@ -343,10 +345,13 @@ void commInFn() {
                 case 'P':                   // set target motor position
                     sscanf(newCmd, "P%f", &targetPosition);
                     putMessage(MSG_CODE_DECODED_POS, targetPosition);
+                    
                     break;
                 case 'R':                   // set target motor rotation
                     sscanf(newCmd, "R%f", &targetRotation);
-                    putMessage(MSG_CODE_DECODED_POS, targetRotation);
+                    putMessage(MSG_CODE_DECODED_ROT, targetRotation);
+                    targetPosition += targetRotation;
+                    putMessage(MSG_CODE_DECODED_POS, targetPosition);
                     break;
                     
                 default:
@@ -409,27 +414,34 @@ void motorCtrlFn() {
            s  : target velocity (targetVelocity)
            v  : measured velocity (vel)
            E_r: position error */
-        int32_t s    = targetVelocity * 6;      // access targetVelocity ONCE
+        float s    = targetVelocity * 6;      // access targetVelocity ONCE
         int32_t y_s;
         if (s == 0) y_s = MAX_PWM_PULSEWIDTH_US;        // set to max if V0
-        else        y_s = (int)(17 * ( s - abs(vel) )); // calculate as normal    // k_p
-        if (E_r < 0) y_s = -y_s;                        // multiply by sgn(E_r)
+        else        y_s = (int)(17 * ( s - abs(vel) )); // calculate as normal
         
         /* position controller
            equation: y_r = k_p*E_r + k_d*(d E_r/dt)
            y_r: controller output (motorPower)
            E_r: position error
            k_p,k_d: empirical constants */
-        int32_t y_r = (int)(11 * E_r + 43 * (E_r - E_r_old) );                    // k_p, k_d
+        int32_t y_r = (int)(11 * E_r + 43 * (E_r - E_r_old) );
         E_r_old = E_r; // update old position error
         
         /* torque: choose y_r or y_s
+           normally:
            y = max(y_s, y_r), v <  0
-               min(y_s, y_r), v >= 0 */
-        if (((vel < 0) && (y_s > y_r)) || ((vel >= 0) && (y_s < y_r))) {
+               min(y_s, y_r), v >= 0
+            
+           exception: if R0, run speed controller only, y = y_s = k_p(s-|v|) */
+        
+        if (targetRotation == 0) { // read targetRotation ONCE
             torque = y_s;
         } else {
-            torque = y_r;
+            if (E_r < 0) y_s = -y_s;   // only multiply by sgn(E_r) if not R0
+            if (((vel < 0) && (y_s > y_r)) || ((vel >= 0) && (y_s < y_r)))
+                torque = y_s;
+            else
+                torque = y_r;
         }
         
         // direction
