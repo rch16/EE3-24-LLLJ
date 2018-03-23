@@ -146,13 +146,7 @@ int main() {
     // Attach ISR to serial
     pc.attach(&serialISR);
     
-    // Attach ISR to photointerrupters
-    I1.rise(&motorISR);
-    I1.fall(&motorISR);
-    I2.rise(&motorISR);
-    I2.fall(&motorISR);
-    I3.rise(&motorISR);
-    I3.fall(&motorISR);
+    
     
     // Declare bitcoin variables
     SHA256 sha;
@@ -181,7 +175,13 @@ int main() {
        state inputs to align rotor and motor states */
     orState = motorHome();
     //pc.printf("Rotor origin: %x\n\r", orState);
-    
+    // Attach ISR to photointerrupters
+    I1.rise(&motorISR);
+    I1.fall(&motorISR);
+    I2.rise(&motorISR);
+    I2.fall(&motorISR);
+    I3.rise(&motorISR);
+    I3.fall(&motorISR);
     // Initial jolt
     motorISR();
     
@@ -412,7 +412,7 @@ void motorCtrlFn() {
         int32_t s    = targetVelocity * 6;      // access targetVelocity ONCE
         int32_t y_s;
         if (s == 0) y_s = MAX_PWM_PULSEWIDTH_US;        // set to max if V0
-        else        y_s = (int)(10 * ( s - abs(vel) )); // calculate as normal
+        else        y_s = (int)(17 * ( s - abs(vel) )); // calculate as normal    // k_p
         if (E_r < 0) y_s = -y_s;                        // multiply by sgn(E_r)
         
         /* position controller
@@ -420,7 +420,7 @@ void motorCtrlFn() {
            y_r: controller output (motorPower)
            E_r: position error
            k_p,k_d: empirical constants */
-        int32_t y_r = (int)(10 * E_r - 20 * (E_r - E_r_old) );
+        int32_t y_r = (int)(11 * E_r + 43 * (E_r - E_r_old) );                    // k_p, k_d
         E_r_old = E_r; // update old position error
         
         /* torque: choose y_r or y_s
@@ -433,7 +433,7 @@ void motorCtrlFn() {
         }
         
         // direction
-        if (torque > 0) {
+        if (torque >= 0) {
             lead = 2;
         } else {
             torque = -torque;  // torque should be positive
